@@ -62,6 +62,7 @@ final class Controller {
             return
         }
         phase = .listening
+        log("listening")
         Sounds.start()
         pill.model.level = 0
         pill.show(.listening)
@@ -72,8 +73,20 @@ final class Controller {
         let samples = recorder.stop()
         let speech = recorder.speechDuration
         Sounds.stop()
+        log("stopped: \(String(format: "%.1f", Double(samples.count) / Recorder.sampleRate))s audio, \(String(format: "%.1f", speech))s speech")
         guard speech >= 0.5 else { reset(); return } // nothing said: discard silently
+        process(samples)
+    }
 
+    /// Test hook: runs an audio file through the same path as a recording.
+    func inject(file path: String) {
+        guard phase == .idle, let samples = try? loadAudio(path) else { log("inject skipped"); return }
+        Paster.prepareFrontmostApp()
+        process(samples)
+    }
+
+    private func process(_ samples: [Float]) {
+        HotKeys.shared.register(id: Self.escapeID, keyCode: kVK_Escape, mods: 0) { [weak self] in self?.cancel() }
         phase = .working
         pill.show(.working)
         generation += 1
@@ -90,13 +103,16 @@ final class Controller {
                 return
             }
             guard let self, gen == self.generation else { return }
+            log("transcribed \(romanian.count) chars")
             guard !romanian.isEmpty else { self.reset(); return }
 
             do {
                 let english = try await Translator.translate(romanian)
                 guard gen == self.generation else { return }
                 History.add(HistoryEntry(date: Date(), romanian: romanian, english: english))
-                if Paster.paste(english) {
+                let pasted = Paster.paste(english)
+                log("translated \(english.count) chars, pasted=\(pasted)")
+                if pasted {
                     self.reset()
                 } else {
                     self.fail("Allow Voci in System Settings › Privacy & Security › Accessibility. Text copied to clipboard.")
@@ -117,6 +133,7 @@ final class Controller {
         case .listening: recorder.stop()
         case .working: generation += 1; job?.cancel()
         }
+        log("cancelled")
         reset()
     }
 
@@ -128,6 +145,7 @@ final class Controller {
     }
 
     func fail(_ message: String) {
+        log("error: \(message)")
         Sounds.error()
         pill.show(.message(message, error: true), autoHide: 5)
     }
@@ -164,7 +182,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller.registerHotkey()
         // Same as pressing the shortcut; lets Shortcuts or scripts (and tests) drive Voci.
         DistributedNotificationCenter.default().addObserver(forName: .init("app.voci.toggle"), object: nil, queue: .main) { [weak self] _ in
+            log("toggle notification")
             MainActor.assumeIsolated { self?.controller.toggle() }
+        }
+        DistributedNotificationCenter.default().addObserver(forName: .init("app.voci.inject"), object: nil, queue: .main) { [weak self] note in
+            guard let path = note.object as? String else { return }
+            log("inject notification")
+            MainActor.assumeIsolated { self?.controller.inject(file: path) }
         }
 
         // Load Whisper in the background so the first recording is fast.

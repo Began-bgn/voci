@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Voci test page</title>
+<!-- ?field=ta|ce&text=...&caret=N presets field, content and cursor. Served over http by tests/live.sh. -->
+<textarea id="ta" rows="6" cols="80"></textarea>
+<div id="ce" contenteditable="true" style="border:1px solid #888;min-height:6em;margin-top:1em"></div>
+<script>
+  const q = new URLSearchParams(location.search);
+  const text = q.get("text") || "";
+  const caret = q.has("caret") ? +q.get("caret") : text.length;
+  const ce = q.get("field") === "ce";
+  const el = document.getElementById(ce ? "ce" : "ta");
+  if (ce) {
+    el.textContent = text;
+    el.focus();
+    const r = document.createRange();
+    r.setStart(el.firstChild || el, el.firstChild ? caret : 0);
+    r.collapse(true);
+    getSelection().removeAllRanges(); getSelection().addRange(r);
+  } else {
+    el.value = text; el.focus(); el.setSelectionRange(caret, caret);
+  }
+</script>

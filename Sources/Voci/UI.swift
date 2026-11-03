@@ -51,42 +51,60 @@ enum Paster {
     /// Electron apps (Claude, Slack) and Chromium only expose text fields to
     /// Accessibility after being asked. Call when recording starts.
     static func prepareFrontmostApp() {
-        guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier else { return }
-        AXUIElementSetAttributeValue(AXUIElementCreateApplication(pid), "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        guard let app = NSWorkspace.shared.frontmostApplication else { return }
+        let el = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetAttributeValue(el, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        // Chromium browsers ignore the Electron flag and need this one instead.
+        if chromium.contains(app.bundleIdentifier ?? "") {
+            AXUIElementSetAttributeValue(el, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+        }
     }
 
-    /// True when the character before the cursor is not whitespace. Unknown → false.
-    static func needsLeadingSpace() -> Bool {
+    private static let chromium: Set<String> = [
+        "com.google.Chrome", "com.google.Chrome.canary", "com.brave.Browser", "com.microsoft.edgemac",
+        "company.thebrowser.Browser", "com.vivaldi.Vivaldi", "com.operasoftware.Opera",
+    ]
+
+    /// Spaces to add around the insertion so it doesn't glue onto neighbouring words.
+    /// Uses Accessibility to read the characters around the cursor; unknown → no space.
+    static func spacing() -> (lead: Bool, trail: Bool) {
         let system = AXUIElementCreateSystemWide()
         var focused: CFTypeRef?
         guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
-              let el = focused, CFGetTypeID(el) == AXUIElementGetTypeID() else { return false }
+              let el = focused, CFGetTypeID(el) == AXUIElementGetTypeID() else { return (false, false) }
         let element = el as! AXUIElement
 
         var rangeRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &rangeRef) == .success,
-              let rv = rangeRef, CFGetTypeID(rv) == AXValueGetTypeID() else { return false }
+              let rv = rangeRef, CFGetTypeID(rv) == AXValueGetTypeID() else { return (false, false) }
         var range = CFRange()
-        guard AXValueGetValue(rv as! AXValue, .cfRange, &range), range.location > 0 else { return false }
+        guard AXValueGetValue(rv as! AXValue, .cfRange, &range) else { return (false, false) }
 
-        var before: String?
-        var prev = CFRange(location: range.location - 1, length: 1)
-        if let prevValue = AXValueCreate(.cfRange, &prev) {
-            var s: CFTypeRef?
-            if AXUIElementCopyParameterizedAttributeValue(element, kAXStringForRangeParameterizedAttribute as CFString,
-                                                          prevValue, &s) == .success {
-                before = s as? String
+        var value: NSString?
+        func char(at i: Int) -> Unicode.Scalar? {
+            guard i >= 0 else { return nil }
+            var r = CFRange(location: i, length: 1)
+            if let rangeValue = AXValueCreate(.cfRange, &r) {
+                var s: CFTypeRef?
+                if AXUIElementCopyParameterizedAttributeValue(element, kAXStringForRangeParameterizedAttribute as CFString,
+                                                              rangeValue, &s) == .success, let str = s as? String, !str.isEmpty {
+                    return str.unicodeScalars.first
+                }
             }
-        }
-        if before == nil {
-            var v: CFTypeRef?
-            if AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &v) == .success, let str = v as? String {
-                let ns = str as NSString
-                if range.location <= ns.length { before = ns.substring(with: NSRange(location: range.location - 1, length: 1)) }
+            if value == nil {
+                var v: CFTypeRef?
+                if AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &v) == .success { value = (v as? String) as NSString? }
             }
+            guard let ns = value, i < ns.length else { return nil }
+            return ns.substring(with: NSRange(location: i, length: 1)).unicodeScalars.first
         }
-        guard let ch = before?.unicodeScalars.first else { return false }
-        return !CharacterSet.whitespacesAndNewlines.contains(ch)
+
+        let blank = CharacterSet.whitespacesAndNewlines
+        let before = char(at: range.location - 1)
+        let after = char(at: range.location + range.length)
+        let lead = before.map { !blank.contains($0) && !"([{\"'“".unicodeScalars.contains($0) } ?? false
+        let trail = after.map { !blank.contains($0) && !".,;:!?)]}\"'”".unicodeScalars.contains($0) } ?? false
+        return (lead, trail)
     }
 
     /// Inserts text at the cursor of the focused app via ⌘V, then restores the clipboard.
@@ -98,7 +116,8 @@ enum Paster {
             pb.setString(text, forType: .string)
             return false
         }
-        let insert = (needsLeadingSpace() ? " " : "") + text
+        let space = spacing()
+        let insert = (space.lead ? " " : "") + text + (space.trail ? " " : "")
 
         let saved: [[(NSPasteboard.PasteboardType, Data)]] = (pb.pasteboardItems ?? []).map { item in
             item.types.compactMap { t in item.data(forType: t).map { (t, $0) } }
@@ -243,7 +262,7 @@ enum LoginItem {
     static var enabled: Bool { SMAppService.mainApp.status == .enabled }
     static func set(_ on: Bool) {
         do { if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() } }
-        catch { NSLog("Voci login item: \(error)") }
+        catch { log("login item: \(error)") }
     }
 }
 

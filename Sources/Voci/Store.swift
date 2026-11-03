@@ -35,6 +35,17 @@ enum Settings {
     }
 }
 
+/// Appends a line to ~/Library/Logs/Voci.log (metadata only, never transcript text).
+func log(_ message: String) {
+    let url = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0].appendingPathComponent("Logs/Voci.log")
+    let line = "\(ISO8601DateFormatter().string(from: Date())) \(message)\n"
+    if let h = try? FileHandle(forWritingTo: url) {
+        h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); try? h.close()
+    } else {
+        try? line.write(to: url, atomically: true, encoding: .utf8)
+    }
+}
+
 struct HistoryEntry: Codable {
     var date: Date
     var romanian: String
