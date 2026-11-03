@@ -107,14 +107,140 @@ enum Paster {
         return (lead, trail)
     }
 
-    /// Inserts text at the cursor of the focused app via ⌘V, then restores the clipboard.
-    /// Returns false (and leaves the text on the clipboard) without Accessibility permission.
-    static func paste(_ text: String) -> Bool {
+    // MARK: Finding the window's text box when nothing is focused
+
+    private static func attr(_ el: AXUIElement, _ name: String) -> CFTypeRef? {
+        var v: CFTypeRef?
+        return AXUIElementCopyAttributeValue(el, name as CFString, &v) == .success ? v : nil
+    }
+
+    private static func frame(_ el: AXUIElement) -> CGRect? {
+        guard let p = attr(el, kAXPositionAttribute), let s = attr(el, kAXSizeAttribute),
+              CFGetTypeID(p) == AXValueGetTypeID(), CFGetTypeID(s) == AXValueGetTypeID() else { return nil }
+        var origin = CGPoint.zero, size = CGSize.zero
+        AXValueGetValue(p as! AXValue, .cgPoint, &origin)
+        AXValueGetValue(s as! AXValue, .cgSize, &size)
+        return CGRect(origin: origin, size: size)
+    }
+
+    private static func focusedElement() -> AXUIElement? {
+        guard let el = attr(AXUIElementCreateSystemWide(), kAXFocusedUIElementAttribute),
+              CFGetTypeID(el) == AXUIElementGetTypeID() else { return nil }
+        return (el as! AXUIElement)
+    }
+
+    /// Text areas, text fields and web contenteditable boxes (Chromium/WebKit report those as
+    /// their own editable ancestor).
+    private static func isTextInput(_ el: AXUIElement) -> Bool {
+        let role = attr(el, kAXRoleAttribute) as? String ?? ""
+        if [kAXTextAreaRole, kAXTextFieldRole, kAXComboBoxRole].contains(role) {
+            // Read-only text (e.g. Finder file-name labels) reports the same roles but can't be set.
+            var settable = DarwinBoolean(false)
+            return AXUIElementIsAttributeSettable(el, kAXValueAttribute as CFString, &settable) == .success && settable.boolValue
+        }
+        if role == kAXGroupRole, let root = attr(el, "AXEditableAncestor"), CFGetTypeID(root) == AXUIElementGetTypeID() {
+            return CFEqual(root, el)
+        }
+        return false
+    }
+
+    /// Visible editable boxes in a window, skipping toolbars (browser address bars) and search fields.
+    private static func textInputs(in window: AXUIElement) -> [(element: AXUIElement, frame: CGRect)] {
+        let bounds = frame(window) ?? .infinite
+        var out: [(AXUIElement, CGRect)] = []
+        var queue = [window], next = 0
+        let deadline = Date().addingTimeInterval(0.8) // big web pages: stay responsive
+        while next < queue.count, next < 5000, Date() < deadline {
+            let el = queue[next]; next += 1
+            let role = attr(el, kAXRoleAttribute) as? String ?? ""
+            // Toolbars hold address bars; lists, tables and outlines hold rename fields (Finder),
+            // never a message box.
+            if [kAXToolbarRole, kAXMenuBarRole, kAXListRole, kAXTableRole, kAXOutlineRole, kAXBrowserRole, "AXGrid"].contains(role) { continue }
+            if isTextInput(el) {
+                if attr(el, kAXSubroleAttribute) as? String != kAXSearchFieldSubrole,
+                   let f = frame(el), f.width > 20, f.height > 10, bounds.intersects(f) {
+                    out.append((el, f))
+                }
+                continue
+            }
+            if let kids = attr(el, kAXChildrenAttribute) as? [AXUIElement] { queue.append(contentsOf: kids) }
+        }
+        return out
+    }
+
+    /// When no text box has focus, focuses the bottom-most one in the front window (where chat apps
+    /// put the message box) with the cursor at the end. False if there is none.
+    private static func focusWindowTextBox() -> Bool {
+        guard let app = NSWorkspace.shared.frontmostApplication,
+              let w = attr(AXUIElementCreateApplication(app.processIdentifier), kAXFocusedWindowAttribute),
+              CFGetTypeID(w) == AXUIElementGetTypeID() else { return false }
+        let inputs = textInputs(in: w as! AXUIElement)
+        guard let best = inputs.max(by: { ($0.frame.maxY, $0.frame.width) < ($1.frame.maxY, $1.frame.width) }) else { return false }
+        log("auto-focus: \(inputs.count) text boxes, picked \(attr(best.element, kAXRoleAttribute) as? String ?? "?")")
+
+        AXUIElementSetAttributeValue(best.element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        usleep(150_000)
+        if !(focusedElement().map(isTextInput) ?? false), isInWebContent(best.element) {
+            // Some web views ignore AX focus; click the box instead and put the pointer back.
+            // Never in native apps, where a click could select or rename things.
+            click(CGPoint(x: best.frame.midX, y: best.frame.midY))
+            usleep(150_000)
+        }
+        guard focusedElement().map(isTextInput) ?? false else { return false }
+        key(kVK_DownArrow, .maskCommand) // cursor to the end, after any existing text
+        usleep(50_000)
+        return true
+    }
+
+    private static func isInWebContent(_ el: AXUIElement) -> Bool {
+        var current: AXUIElement? = el
+        for _ in 0..<60 {
+            guard let e = current else { return false }
+            if attr(e, kAXRoleAttribute) as? String == "AXWebArea" { return true }
+            current = attr(e, kAXParentAttribute).flatMap { CFGetTypeID($0) == AXUIElementGetTypeID() ? ($0 as! AXUIElement) : nil }
+        }
+        return false
+    }
+
+    private static func click(_ point: CGPoint) {
+        let back = CGEvent(source: nil)?.location
+        for type in [CGEventType.leftMouseDown, .leftMouseUp] {
+            CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
+        }
+        if let back { CGWarpMouseCursorPosition(back) }
+    }
+
+    private static func key(_ code: Int, _ flags: CGEventFlags) {
+        let src = CGEventSource(stateID: .combinedSessionState)
+        for down in [true, false] {
+            let e = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(code), keyDown: down)
+            e?.flags = flags
+            e?.post(tap: .cghidEventTap)
+        }
+    }
+
+    enum Result { case pasted, noPermission, noTextBox }
+
+    /// Inserts text at the cursor of the focused app via ⌘V, then restores the clipboard. With no
+    /// text box focused, it focuses the window's message box first. On failure the text is left
+    /// on the clipboard.
+    static func paste(_ text: String) -> Result {
         let pb = NSPasteboard.general
         guard AXIsProcessTrusted() else {
             pb.clearContents()
             pb.setString(text, forType: .string)
-            return false
+            return .noPermission
+        }
+        if !(focusedElement().map(isTextInput) ?? false) {
+            // Chromium builds its accessibility tree lazily after prepareFrontmostApp(); retry once.
+            if !focusWindowTextBox() {
+                usleep(300_000)
+                if !focusWindowTextBox() {
+                    pb.clearContents()
+                    pb.setString(text, forType: .string)
+                    return .noTextBox
+                }
+            }
         }
         // Chromium builds its accessibility tree lazily after prepareFrontmostApp(); give it a moment.
         var around = spacing()
@@ -131,13 +257,7 @@ enum Paster {
         pb.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.TransientType"))
         let ours = pb.changeCount
 
-        let src = CGEventSource(stateID: .combinedSessionState)
-        let down = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: true)
-        let up = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: false)
-        down?.flags = .maskCommand
-        up?.flags = .maskCommand
-        down?.post(tap: .cghidEventTap)
-        up?.post(tap: .cghidEventTap)
+        key(kVK_ANSI_V, .maskCommand)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
             guard pb.changeCount == ours else { return } // user copied something meanwhile
@@ -149,7 +269,7 @@ enum Paster {
             }
             if !items.isEmpty { pb.writeObjects(items) }
         }
-        return true
+        return .pasted
     }
 }
 

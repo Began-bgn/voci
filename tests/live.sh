@@ -34,7 +34,7 @@ setup() {
       keys 'key code 126 using command down'; for ((i = 0; i < caret; i++)); do keys 'key code 124'; done ;;
     *) # browsers: test page, $kind selects textarea or contenteditable
       local enc; enc=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1]))' "$text")
-      open -a "$app" "$PAGE?field=$kind&text=$enc&caret=$caret&n=$RANDOM"; sleep 2.5 ;;
+      open -a "$app" "$PAGE?field=$kind&text=$enc&caret=$caret${extra:-}&n=$RANDOM"; sleep 2.5 ;;
   esac
 }
 
@@ -68,6 +68,12 @@ for app in "${apps[@]}"; do
     setup "$app" "" 0;                  check "$tag empty"  "$EN"
     setup "$app" "Hello there." 12;     check "$tag append" "Hello there\. $EN"
     setup "$app" "Start end" 6;         check "$tag middle" "Start $EN end"
+    if [ "$kind" != "-" ]; then # nothing focused: Voci must find the box itself
+      extra="&nofocus=1"; setup "$app" "" 0;              check "$tag unfocused empty"  "$EN"
+      extra="&nofocus=1"; setup "$app" "Hello there." 0;  check "$tag unfocused append" "Hello there\. $EN"
+      extra="&nofocus=1&chat=1"; setup "$app" "Hi." 0;    check "$tag unfocused chat"   "Hi\. $EN"
+      extra=""
+    fi
   done
 done
 echo "passed $pass, failed $fail"

@@ -113,12 +113,15 @@ final class Controller {
                 guard gen == self.generation else { return }
                 History.add(HistoryEntry(date: Date(), romanian: ro, english: english))
                 try? FileManager.default.removeItem(at: Self.failedFile)
-                let pasted = Paster.paste(english)
-                log("translated \(english.count) chars, pasted=\(pasted)")
-                if pasted {
-                    self.reset()
-                } else {
+                let result = Paster.paste(english)
+                log("translated \(english.count) chars, pasted=\(result == .pasted)")
+                switch result {
+                case .pasted: self.reset()
+                case .noPermission:
                     self.fail("Allow Voci in System Settings › Privacy & Security › Accessibility. Text copied to clipboard.")
+                    self.reset(keepPill: true)
+                case .noTextBox:
+                    self.fail("No text box in this window — English copied to clipboard")
                     self.reset(keepPill: true)
                 }
             } catch {
