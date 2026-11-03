@@ -203,6 +203,7 @@ struct PillView: View {
         .overlay(Capsule().stroke(Color.white.opacity(0.12)))
         .fixedSize()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .environment(\.colorScheme, .dark)
     }
 }
 
