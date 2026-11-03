@@ -13,7 +13,7 @@ enum Settings {
             "silenceSeconds": 3.0,
             "soundsOn": true,
             "micUID": "",
-            "model": "qwen3:14b",
+            "model": "openai/gpt-oss-120b",
         ])
     }
 
@@ -25,7 +25,7 @@ enum Settings {
     static var soundsOn: Bool { get { d.bool(forKey: "soundsOn") } set { d.set(newValue, forKey: "soundsOn") } }
     /// Empty string means the system default input.
     static var micUID: String { get { d.string(forKey: "micUID") ?? "" } set { d.set(newValue, forKey: "micUID") } }
-    static var model: String { get { d.string(forKey: "model") ?? "qwen3:14b" } set { d.set(newValue, forKey: "model") } }
+    static var model: String { get { d.string(forKey: "model") ?? "openai/gpt-oss-120b" } set { d.set(newValue, forKey: "model") } }
 
     static var supportDir: URL {
         let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]

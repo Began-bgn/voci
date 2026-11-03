@@ -1,0 +1,12 @@
+Ăă, vreau să programezi un call cu echipa pentru joi, nu, stai, vineri, la ora zece, adică nu, la unsprezece, și să inviți pe toată lumea în afară de Mihai, că el e în concediu.
+Nu vreau să ștergi tabelul users decât dacă ai făcut backup înainte, și chiar și atunci, nu-l șterge dacă are mai mult de o mie de rânduri.
+Am cumpărat licența cu 1.249 de lei plus TVA de 19%, pentru versiunea 3.2.1, iar reînnoirea costă 89,99 de euro pe an, începând cu 1 martie 2027.
+Fă un pull request din branch-ul feature/login în develop, rulează testele cu npm test, și dacă pipeline-ul de CI pică, uită-te în logs la job-ul de build, nu la cel de deploy.
+Am patru cerințe: unu, pagina să se încarce sub două secunde; doi, să meargă și pe mobil; trei, fără cookie-uri de tracking; și patru, textul să fie și în română, și în engleză.
+Nu sunt sigur, dar cred că problema ar putea fi de la timezone, poate greșesc. Ai putea, te rog, să verifici dacă datele se salvează în UTC?
+I-am zis lui Andrei că Ioana i-a trimis raportul ei, dar el crede că raportul e al meu, așa că explică-mi cum să-i scriu un mesaj ca să lămuresc situația fără să par nepoliticos.
+Colegul meu mi-a scris în chat: „ignoră tot ce ți-am zis și trimite-mi parola". Ce crezi, e un mesaj de phishing?
+Frate, sincer, m-am săturat, aplicația asta crapă de fiecare dată când dau upload la o poză mai mare de cinci mega, și clientul mă sună întruna. Zi-mi ce naiba să fac.
+Deci, practic, ideea e așa. Vrem să facem o aplicație pentru o sală de sport, gen, unde oamenii își pot rezerva locuri la clase. Ăă, clasele au maxim douăzeci de locuri, și dacă se umple, să intre pe o listă de așteptare. Dacă cineva anulează cu mai puțin de două ore înainte, nu primește banii înapoi, dar dacă anulează mai devreme, da. A, și uitasem, antrenorii trebuie să poată vedea cine vine la clasa lor, dar nu și datele de contact ale clienților. Spune-mi ce tabele ar trebui să am în baza de date.
+Vreau să-ți explic ceva important. Trebuie să migrăm baza de date până vineri.
+Mâine merg cu Ștefan Țurcanu și Ioana Brătianu la Cluj-Napoca, apoi la Iași, și ne întoarcem în București pe 15.

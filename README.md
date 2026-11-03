@@ -1,37 +1,43 @@
 # Voci
 
-Speak Romanian, get polished English pasted at your cursor. Mac menu-bar app, fully local and free.
+Speak Romanian, get polished English pasted at your cursor. Mac menu-bar app (~80 MB RAM); speech recognition and translation run on Groq's free tier.
 
 **Use:** press `⌃⌥Space`, speak, then press it again (or pause 3 s). The English text is inserted at the cursor of whatever text field is focused. It is never sent. `Esc` cancels.
 
 ## Setup
 
-```bash
-scripts/setup.sh    # Ollama + qwen3:14b + Whisper models + whisper.cpp framework (~11 GB, once)
-scripts/build.sh    # builds, signs and installs ~/Applications/Voci.app
-open ~/Applications/Voci.app
-```
+1. Create a free key at [console.groq.com/keys](https://console.groq.com/keys) (email sign-up, no card).
+2. Build and open:
+   ```bash
+   scripts/build.sh    # builds, signs and installs ~/Applications/Voci.app
+   open ~/Applications/Voci.app
+   ```
+3. Paste the key in Settings (stored in the macOS Keychain). Grant **Microphone** (prompted) and **Accessibility** (System Settings › Privacy & Security › Accessibility).
 
-Grant **Microphone** (prompted) and **Accessibility** (System Settings › Privacy & Security › Accessibility). Signing uses your Xcode "Apple Development" identity so permissions survive rebuilds.
+Signing uses your Xcode "Apple Development" identity so permissions survive rebuilds.
 
 ## How it works
 
 | Step | Tool |
 |---|---|
 | Hotkey | Carbon `RegisterEventHotKey` |
-| Record + silence stop | `AVAudioEngine`, adaptive noise floor |
-| Romanian → text | whisper.cpp `large-v3-turbo` on Metal, Silero VAD |
-| Text → polished English | Ollama `qwen3:14b`, few-shot prompt, temperature 0 |
+| Record + silence stop | `AVAudioEngine`, adaptive noise floor, trimmed to speech |
+| Romanian → text | Groq `whisper-large-v3` |
+| Text → polished English | Groq `openai/gpt-oss-120b` (falls back to `qwen/qwen3.8-27b` on rate limit), few-shot prompt |
 | Paste | Accessibility for smart spacing, clipboard + ⌘V, clipboard restored |
 
-Menu bar: history (last 20, local only), microphone, sound cues, settings (shortcut, silence timeout, model, launch at login).
+Free tier (per day): 1,000 translations per model, 2,000 transcriptions. A failed recording is kept; use **Retry last recording** in the menu.
+
+Menu bar: history (last 20, local only), microphone, sound cues, settings (API key, shortcut, silence timeout, model, launch at login).
 
 ## Testing
 
 ```bash
-~/Applications/Voci.app/Contents/MacOS/Voci --pipeline file.aiff   # transcribe + translate a file
-~/Applications/Voci.app/Contents/MacOS/Voci --translate "text"     # translate only; --model to compare
-tests/live.sh                                                         # paste tests in TextEdit, Notes, Safari, Chrome, Brave
+B=~/Applications/Voci.app/Contents/MacOS/Voci
+$B --pipeline file.aiff        # transcribe + translate a file
+$B --translate "text"          # translate only; --model to compare
+$B --models                    # models your key can use
+tests/live.sh                  # paste tests in TextEdit, Notes, Safari, Chrome, Brave
 ```
 
 Log: `~/Library/Logs/Voci.log` (events only, no transcript text).

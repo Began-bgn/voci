@@ -66,19 +66,19 @@ enum Paster {
     ]
 
     /// Spaces to add around the insertion so it doesn't glue onto neighbouring words.
-    /// Uses Accessibility to read the characters around the cursor; unknown → no space.
-    static func spacing() -> (lead: Bool, trail: Bool) {
+    /// Uses Accessibility to read the characters around the cursor; nil when the app doesn't say.
+    static func spacing() -> (lead: Bool, trail: Bool)? {
         let system = AXUIElementCreateSystemWide()
         var focused: CFTypeRef?
         guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
-              let el = focused, CFGetTypeID(el) == AXUIElementGetTypeID() else { return (false, false) }
+              let el = focused, CFGetTypeID(el) == AXUIElementGetTypeID() else { return nil }
         let element = el as! AXUIElement
 
         var rangeRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &rangeRef) == .success,
-              let rv = rangeRef, CFGetTypeID(rv) == AXValueGetTypeID() else { return (false, false) }
+              let rv = rangeRef, CFGetTypeID(rv) == AXValueGetTypeID() else { return nil }
         var range = CFRange()
-        guard AXValueGetValue(rv as! AXValue, .cfRange, &range) else { return (false, false) }
+        guard AXValueGetValue(rv as! AXValue, .cfRange, &range) else { return nil }
 
         var value: NSString?
         func char(at i: Int) -> Unicode.Scalar? {
@@ -116,7 +116,10 @@ enum Paster {
             pb.setString(text, forType: .string)
             return false
         }
-        let space = spacing()
+        // Chromium builds its accessibility tree lazily after prepareFrontmostApp(); give it a moment.
+        var around = spacing()
+        if around == nil { usleep(300_000); around = spacing() }
+        let space = around ?? (false, false)
         let insert = (space.lead ? " " : "") + text + (space.trail ? " " : "")
 
         let saved: [[(NSPasteboard.PasteboardType, Data)]] = (pb.pasteboardItems ?? []).map { item in
@@ -276,9 +279,21 @@ struct SettingsView: View {
     @State private var sounds = Settings.soundsOn
     @State private var model = Settings.model
     @State private var login = LoginItem.enabled
+    @State private var key = ""
+    @State private var keySaved = Keychain.groqKey != nil
 
     var body: some View {
         Form {
+            Section {
+                SecureField("Groq API key", text: $key, prompt: Text(keySaved ? "Saved in Keychain" : "gsk_…"))
+                    .onSubmit(saveKey)
+                HStack {
+                    Link("Get a free key at console.groq.com/keys", destination: URL(string: "https://console.groq.com/keys")!)
+                        .font(.caption)
+                    Spacer()
+                    Button("Save", action: saveKey).disabled(key.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
             LabeledContent("Shortcut") {
                 Button(recording ? "Press new shortcut…" : label) { recording ? stopRecording() : startRecording() }
                     .frame(minWidth: 160)
@@ -299,8 +314,17 @@ struct SettingsView: View {
                 }
         }
         .formStyle(.grouped)
-        .frame(width: 420)
+        // A grouped Form has no natural height; without one the window collapses to nothing.
+        .frame(width: 460, height: 400)
         .onDisappear { stopRecording() }
+    }
+
+    private func saveKey() {
+        let k = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !k.isEmpty else { return }
+        Keychain.setGroqKey(k)
+        key = ""
+        keySaved = true
     }
 
     private func startRecording() {
@@ -352,10 +376,13 @@ final class SettingsWindow {
             w.title = "Voci Settings"
             w.styleMask = [.titled, .closable]
             w.isReleasedWhenClosed = false
+            w.level = .floating
             w.center()
             window = w
         }
-        NSApp.activate()
+        // Menu-bar-only apps are never frontmost on their own; force it.
+        NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+        window?.orderFrontRegardless()
     }
 }

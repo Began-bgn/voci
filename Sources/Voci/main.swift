@@ -13,7 +13,6 @@ final class Controller {
 
     let pill = Pill()
     private let recorder = Recorder()
-    let transcriber = Transcriber()
     private var job: Task<Void, Never>?
     private var generation = 0
 
@@ -56,7 +55,6 @@ final class Controller {
             return
         }
         Paster.prepareFrontmostApp()
-        Translator.warmUp()
         do { try recorder.start() } catch {
             fail(error.localizedDescription)
             return
@@ -85,31 +83,36 @@ final class Controller {
         process(samples)
     }
 
+    /// The last recording that failed to process, kept so no speech is lost.
+    static var failedFile: URL { Settings.supportDir.appendingPathComponent("failed-recording.wav") }
+    static var hasFailedRecording: Bool { FileManager.default.fileExists(atPath: failedFile.path) }
+
+    func retryFailed() {
+        guard phase == .idle, let samples = try? loadAudio(Self.failedFile.path) else { return }
+        log("retry")
+        process(samples)
+    }
+
     private func process(_ samples: [Float]) {
         HotKeys.shared.register(id: Self.escapeID, keyCode: kVK_Escape, mods: 0) { [weak self] in self?.cancel() }
         phase = .working
         pill.show(.working)
         generation += 1
         let gen = generation
-        let transcriber = self.transcriber
 
         job = Task { [weak self] in
-            let romanian: String
+            var romanian: String?
             do {
-                romanian = try await Task.detached(priority: .userInitiated) { try transcriber.transcribe(samples) }.value
-            } catch {
+                let ro = try await Groq.transcribe(samples)
+                romanian = ro
                 guard let self, gen == self.generation else { return }
-                self.fail(error.localizedDescription); self.reset(keepPill: true)
-                return
-            }
-            guard let self, gen == self.generation else { return }
-            log("transcribed \(romanian.count) chars")
-            guard !romanian.isEmpty else { self.reset(); return }
+                log("transcribed \(ro.count) chars")
+                guard !ro.isEmpty else { self.reset(); return }
 
-            do {
-                let english = try await Translator.translate(romanian)
+                let english = try await Groq.translateWithFallback(ro)
                 guard gen == self.generation else { return }
-                History.add(HistoryEntry(date: Date(), romanian: romanian, english: english))
+                History.add(HistoryEntry(date: Date(), romanian: ro, english: english))
+                try? FileManager.default.removeItem(at: Self.failedFile)
                 let pasted = Paster.paste(english)
                 log("translated \(english.count) chars, pasted=\(pasted)")
                 if pasted {
@@ -119,9 +122,10 @@ final class Controller {
                     self.reset(keepPill: true)
                 }
             } catch {
-                guard gen == self.generation else { return }
-                History.add(HistoryEntry(date: Date(), romanian: romanian, english: nil))
-                self.fail(error.localizedDescription + " — Romanian text saved in History")
+                guard let self, gen == self.generation else { return }
+                try? Groq.wav(samples).write(to: Self.failedFile, options: .atomic)
+                if let ro = romanian { History.add(HistoryEntry(date: Date(), romanian: ro, english: nil)) }
+                self.fail(error.localizedDescription + " — use “Retry last recording” in the menu")
                 self.reset(keepPill: true)
             }
         }
@@ -185,20 +189,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             log("toggle notification")
             MainActor.assumeIsolated { self?.controller.toggle() }
         }
+        DistributedNotificationCenter.default().addObserver(forName: .init("app.voci.retry"), object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.controller.retryFailed() }
+        }
+        DistributedNotificationCenter.default().addObserver(forName: .init("app.voci.settings"), object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.settings.show { self?.controller.registerHotkey() } }
+        }
         DistributedNotificationCenter.default().addObserver(forName: .init("app.voci.inject"), object: nil, queue: .main) { [weak self] note in
             guard let path = note.object as? String else { return }
             log("inject notification")
             MainActor.assumeIsolated { self?.controller.inject(file: path) }
         }
 
-        // Load Whisper in the background so the first recording is fast.
-        let transcriber = controller.transcriber
-        Task.detached(priority: .utility) {
-            do { try transcriber.load() } catch {
-                await MainActor.run { self.controller.fail(error.localizedDescription + " — run scripts/setup.sh") }
-            }
+        if Keychain.groqKey == nil {
+            settings.show { [weak self] in self?.controller.registerHotkey() }
         }
-
         if !AXIsProcessTrusted() {
             AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary)
         }
@@ -226,6 +231,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         title.isEnabled = false
         menu.addItem(title)
         menu.addItem(.separator())
+        if Controller.hasFailedRecording {
+            menu.addItem(MenuAction("Retry last recording") { [weak self] in self?.controller.retryFailed() })
+        }
 
         let history = NSMenu()
         let entries = History.load()
@@ -298,24 +306,24 @@ func runCLI(_ args: [String]) async -> Int32 {
     do {
         if let text = arg("--translate") {
             let t0 = Date()
-            print(try await Translator.translate(text, model: model))
+            print(try await Groq.translate(text, model: model))
             FileHandle.standardError.write("[\(String(format: "%.2f", Date().timeIntervalSince(t0)))s]\n".data(using: .utf8)!)
         } else if let path = arg("--transcribe") ?? arg("--pipeline") {
-            let t = Transcriber()
-            try t.load()
             let samples = try loadAudio(path)
             let t0 = Date()
-            let ro = try t.transcribe(samples)
+            let ro = try await Groq.transcribe(samples)
             let t1 = Date()
             print("RO: \(ro)")
             var timing = String(format: "[stt %.2fs for %.1fs audio", t1.timeIntervalSince(t0), Double(samples.count) / Recorder.sampleRate)
             if args.contains("--pipeline"), !ro.isEmpty {
-                print("EN: \(try await Translator.translate(ro, model: model))")
+                print("EN: \(try await Groq.translate(ro, model: model))")
                 timing += String(format: ", translate %.2fs", Date().timeIntervalSince(t1))
             }
             FileHandle.standardError.write((timing + "]\n").data(using: .utf8)!)
+        } else if args.contains("--models") {
+            print(try await Groq.models().joined(separator: "\n"))
         } else {
-            print("usage: Voci [--transcribe file | --pipeline file | --translate text] [--model name]")
+            print("usage: Voci [--transcribe file | --pipeline file | --translate text | --models] [--model name]")
             return 2
         }
         return 0

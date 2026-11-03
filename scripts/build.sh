@@ -9,9 +9,8 @@ APP="$HOME/Applications/Voci.app"
 
 pkill -x Voci 2>/dev/null || true
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks"
+mkdir -p "$APP/Contents/MacOS"
 cp "$BIN" "$APP/Contents/MacOS/Voci"
-cp -R Vendor/build-apple/whisper.xcframework/macos-arm64_x86_64/whisper.framework "$APP/Contents/Frameworks/"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -37,6 +36,5 @@ if [ -z "$IDENTITY" ]; then
   echo "No Apple Development identity: sign in to Xcode (Settings › Accounts). Using ad-hoc signing." >&2
   IDENTITY=-
 fi
-codesign --force --sign "$IDENTITY" "$APP/Contents/Frameworks/whisper.framework"
 codesign --force --sign "$IDENTITY" "$APP"
 echo "Installed $APP (signed: $IDENTITY)"
