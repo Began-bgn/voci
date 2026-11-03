@@ -1,0 +1,4 @@
+.build/
+Vendor/
+tests/audio/
+.DS_Store
