@@ -116,7 +116,9 @@ final class Controller {
                 let result = Paster.paste(english)
                 log("translated \(english.count) chars, pasted=\(result == .pasted)")
                 switch result {
-                case .pasted: self.reset()
+                case .pasted:
+                    self.reset(keepPill: true)
+                    self.pill.pasted()
                 case .noPermission:
                     self.fail("Allow Voci in System Settings › Privacy & Security › Accessibility. Text copied to clipboard.")
                     self.reset(keepPill: true)
@@ -154,7 +156,7 @@ final class Controller {
     func fail(_ message: String) {
         log("error: \(message)")
         Sounds.error()
-        pill.show(.message(message, error: true), autoHide: 5)
+        pill.show(.message(message, error: true), autoHide: 3)
     }
 }
 

@@ -289,45 +289,78 @@ enum Sounds {
 
 enum PillState: Equatable {
     case hidden, listening, working
+    case collapsing, pasted // bars shrink, then the green check (see DESIGN.md "authored moment")
     case message(String, error: Bool)
 }
 
 final class PillModel: ObservableObject {
     @Published var state: PillState = .hidden
     @Published var level: Float = 0
+    @Published var visible = false
+}
+
+/// Colors and sizes from DESIGN.md.
+enum Palette {
+    static let record = Color(red: 1, green: 0x45 / 255, blue: 0x3A / 255)    // #FF453A
+    static let success = Color(red: 0x30 / 255, green: 0xD1 / 255, blue: 0x58 / 255) // #30D158
+    static let error = Color(red: 1, green: 0x9F / 255, blue: 0x0A / 255)     // #FF9F0A
 }
 
 struct PillView: View {
     @ObservedObject var model: PillModel
+    @Environment(\.colorScheme) private var scheme
+    private let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             switch model.state {
             case .listening:
-                Circle().fill(Color.red).frame(width: 8, height: 8)
+                Circle().fill(Palette.record).frame(width: 8, height: 8)
                 LevelBars(level: model.level)
-                Text("Listening…")
             case .working:
                 ProgressView().controlSize(.small)
-                Text("Translating…")
+                Text("Translating")
+            case .collapsing:
+                LevelBars(level: 0)
+            case .pasted:
+                Image(systemName: "checkmark").font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(Palette.success)
             case .message(let text, let error):
                 Image(systemName: error ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                    .foregroundStyle(error ? Color.yellow : Color.green)
-                Text(text).lineLimit(2)
+                    .foregroundStyle(error ? Palette.error : Palette.success)
+                Text(text).lineLimit(3).frame(maxWidth: 280, alignment: .leading)
             case .hidden:
                 EmptyView()
             }
         }
         .font(.system(size: 13, weight: .medium))
-        .foregroundStyle(.white)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(Capsule().fill(Color.black.opacity(0.82)))
-        .overlay(Capsule().stroke(Color.white.opacity(0.12)))
-        .fixedSize()
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .environment(\.colorScheme, .dark)
+        .foregroundStyle(.primary)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .frame(minHeight: 36)
+        .background(VisualEffect().overlay(scheme == .dark ? Color(white: 36 / 255, opacity: 0.78)
+                                                           : Color(white: 246 / 255, opacity: 0.80)))
+        .clipShape(Capsule())
+        .overlay(Capsule().stroke(scheme == .dark ? Color.white.opacity(0.10) : Color.black.opacity(0.08), lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.18), radius: 7, y: 4)
+        .opacity(model.visible ? 1 : 0)
+        .scaleEffect(model.visible || reduceMotion ? 1 : 0.96)
+        .animation(model.visible ? .easeOut(duration: 0.15) : .easeIn(duration: 0.2), value: model.visible)
+        .padding(.top, 8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
+}
+
+/// Behind-window blur under the pill's tint, so it adapts to whatever app is beneath it.
+struct VisualEffect: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let v = NSVisualEffectView()
+        v.material = .hudWindow
+        v.blendingMode = .behindWindow
+        v.state = .active
+        return v
+    }
+    func updateNSView(_ v: NSVisualEffectView, context: Context) {}
 }
 
 struct LevelBars: View {
@@ -336,7 +369,7 @@ struct LevelBars: View {
     var body: some View {
         HStack(spacing: 2) {
             ForEach(0..<weights.count, id: \.self) { i in
-                Capsule().fill(Color.white)
+                Capsule().fill(Color.primary)
                     .frame(width: 3, height: CGFloat(4 + 14 * min(1, level * weights[i] * 1.3)))
             }
         }
@@ -351,7 +384,7 @@ final class Pill {
     private var hideWork: DispatchWorkItem?
 
     init() {
-        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 460, height: 64),
+        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 460, height: 100),
                         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
         panel.level = .statusBar
         panel.isOpaque = false
@@ -365,18 +398,37 @@ final class Pill {
 
     func show(_ state: PillState, autoHide: TimeInterval? = nil) {
         hideWork?.cancel()
+        if state == .hidden {
+            model.visible = false // fades out (200 ms), then the panel leaves
+            schedule(0.22) { [weak self] in self?.model.state = .hidden; self?.panel.orderOut(nil) }
+            return
+        }
         model.state = state
-        if state == .hidden { panel.orderOut(nil); return }
-        let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main
-        if let vf = screen?.visibleFrame {
-            panel.setFrameOrigin(NSPoint(x: vf.midX - panel.frame.width / 2, y: vf.maxY - panel.frame.height - 6))
+        if !panel.isVisible {
+            let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main
+            if let vf = screen?.visibleFrame {
+                panel.setFrameOrigin(NSPoint(x: vf.midX - panel.frame.width / 2, y: vf.maxY - panel.frame.height))
+            }
+            panel.orderFrontRegardless()
         }
-        panel.orderFrontRegardless()
-        if let autoHide {
-            let work = DispatchWorkItem { [weak self] in self?.show(.hidden) }
-            hideWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + autoHide, execute: work)
+        DispatchQueue.main.async { self.model.visible = true }
+        if let autoHide { schedule(autoHide) { [weak self] in self?.show(.hidden) } }
+    }
+
+    /// The paste moment: bars collapse (120 ms), the green check holds ~600 ms, then the pill fades out.
+    func pasted() {
+        hideWork?.cancel()
+        withAnimation(.easeIn(duration: 0.12)) { model.state = .collapsing }
+        schedule(0.13) { [weak self] in
+            self?.model.state = .pasted
+            self?.schedule(0.6) { self?.show(.hidden) }
         }
+    }
+
+    private func schedule(_ delay: TimeInterval, _ block: @escaping () -> Void) {
+        let work = DispatchWorkItem(block: block)
+        hideWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 }
 
